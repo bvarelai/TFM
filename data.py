@@ -3,127 +3,133 @@ import pandas as pd
 
 DATA_DIR = Path("data/raw")
 
+COLUMNS = [ "user_id", "item_id", "rating", "timestamp"]
+
+# --------------------------------------------------------------------------
+# Carga
+# --------------------------------------------------------------------------
 def load_and_normalize_data(dataset: str) -> pd.DataFrame:
-    
     if dataset == "ml-100k":
-        path = DATA_DIR / dataset / "u.data"
         df = pd.read_csv(
-            path,
+            DATA_DIR / dataset / dataset / "u.data",
             sep="\t",
-            names=[
-                "user_id",
-                "item_id",
-                "rating",
-                "timestamp"
-            ]
-        )
+            names=COLUMNS
+        )        
     elif dataset in ("ml-1m", "ml-10m"):
-        path = DATA_DIR / dataset / "ratings.dat"
         df = pd.read_csv(
-            path,
+            DATA_DIR / dataset / dataset  / "ratings.dat",
             sep="::",
             engine="python",
-            names=[
-                "user_id",
-                "item_id",
-                "rating",
-                "timestamp"
-            ]
+            names=COLUMNS
         )
     else:
-        raise ValueError(
-            f"Dataset no soportado: {dataset}"
-        )
-    df["user_id"] = df["user_id"].astype("int32")
-    df["item_id"] = df["item_id"].astype("int32")
-    df["rating"] = df["rating"].astype("float32")
-    df["timestamp"] = df["timestamp"].astype("int64")
-    return df
+        raise ValueError(f"Dataset no soportado: {dataset}")
+
+    return df.astype(
+        {
+            "user_id": "int32",
+            "item_id": "int32",
+            "rating": "float32",
+            "timestamp": "int64"
+        }
+    )
 
 
+# --------------------------------------------------------------------------
+# Limpieza y filtrado
+# --------------------------------------------------------------------------
 def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+    n_inicial = len(df)
 
-    # Filas incopletas
+    # Filas incompletas
     df = df.dropna()
     # Duplicados exactos
     df = df.drop_duplicates().copy()
-    # Detectar valoraciones repetidas usuario-pelicula
-    duplicated = df.duplicated(
-        subset=["user_id", "item_id"],
-        keep=False
-    )
-
+    
+    # Detectar valoraciones repetidas usuario-item
+    duplicated = df.duplicated(subset=["user_id", "item_id"], keep=False)
     if duplicated.any():
         raise ValueError(
             "Se han encontrado valoraciones repetidas "
-            "para un mismo usuario y pelicula."
+            "para un mismo usuario y item."
         )    
+    print(f"[clean] filas eliminadas: {n_inicial - len(df)}")
     return df
 
-def filter_users(df, min_interactions=5) -> pd.DataFrame:
 
-    #user_counts = df["user_id"].value_counts()                  ## Interactions por usuario
-    user_counts = df.groupby("user_id")["item_id"].nunique()  ## Contar peliculas distintas por usuario
-    valid_users = user_counts[user_counts >= min_interactions].index
-    return df[df["user_id"].isin(valid_users)].copy()
+def filter_min_interactions(df, min_user: int, min_item: int) -> pd.DataFrame:
+    """
+    Filtra usuarios e items con pocas interacciones.
+    Se repite hasta que ambos criterios se cumplan a la vez, porque
+    quitar items puede dejar a un usuario por debajo del minimo.
+    """
+    n_inicial = len(df)
 
-def show_dataset_stats(df: pd.DataFrame):
+    while True:
+      n_antes = len(df)
+      
+      ## Contar items distintos por usuario
+      user_counts = df.groupby("user_id")["item_id"].nunique()  
+      valid_users = user_counts[user_counts >= min_user].index
+      df = df[df["user_id"].isin(valid_users)]
     
-    num_users = df["user_id"].nunique()
-    num_items = df["item_id"].nunique()
-    num_interactions = len(df)
-    sparsity = 1 - (num_interactions / (num_users * num_items))
+      ## Contar usuarios distintos por item
+      item_counts = df.groupby("item_id")["user_id"].nunique()
+      valid_items = item_counts[item_counts >= min_item].index
+      df = df[df["item_id"].isin(valid_items)]
 
-    print(f"Número de usuarios: {num_users}")
-    print(f"Número de películas: {num_items}")
-    print(f"Número de interacciones: {num_interactions}")
-    print(f"Esparsidad: {sparsity:.4f}")
+      if len(df) == n_antes:
+          break
+ 
+    print(f"[filter] interacciones eliminadas: {n_inicial - len(df)}")
+    return df.copy()
 
-"""
-def split_data(df: pd.DataFrame, test_ratio: float = 0.2):
-    
-    df = df.sort_values(
-        ["user_id", "timestamp"]
-    )
+# --------------------------------------------------------------------------
+# Estadisticas
+# --------------------------------------------------------------------------
+def get_dataset_stats(df: pd.DataFrame) -> dict:
+    """Devuelve las estadisticas como dict serializable a JSON."""
+    num_users = int(df["user_id"].nunique())
+    num_items = int(df["item_id"].nunique())
+    num_interactions = int(len(df))
 
-    train_parts = []
-    test_parts = []
-
-    for _, group in df.groupby("user_id"):
-        split_idx = int(len(group) * (1 - test_ratio))
-
-        train_parts.append(group.iloc[:split_idx])
-        test_parts.append(group.iloc[split_idx:])
-
-    train = pd.concat(train_parts).reset_index(drop=True)
-    test = pd.concat(test_parts).reset_index(drop=True)
-
-    return train, test
-
-def validate_split(train, test):
-    
-    train_users = set(train["user_id"])
-    test_users = set(test["user_id"])
-
-    if not test_users.issubset(train_users):
-        raise ValueError(
-            "El conjunto de prueba contiene usuarios "
-            "que no están presentes en el conjunto de entrenamiento."
-        )
-
-def get_dataset_stats(df):
-    
-    num_users = df["user_id"].nunique()
-    num_items = df["item_id"].nunique()
-    num_interactions = len(df)
-    sparsity = 1 - (num_interactions / (num_users * num_items))
+    per_user = df.groupby("user_id").size()
+    per_item = df.groupby("item_id").size()
 
     return {
         "num_users": num_users,
         "num_items": num_items,
         "num_interactions": num_interactions,
-        "sparsity": sparsity
+        "sparsity": float(1 - num_interactions / (num_users * num_items)),
+        "rating_mean": float(df["rating"].mean()),
+        "rating_std": float(df["rating"].std()),
+        "rating_distribution": {
+            str(k): int(v)
+            for k, v in df["rating"].value_counts().sort_index().items()
+        },
+        "interactions_per_user": {
+            "min": int(per_user.min()),
+            "median": float(per_user.median()),
+            "mean": float(per_user.mean()),
+            "max": int(per_user.max()),
+        },
+        "interactions_per_item": {
+            "min": int(per_item.min()),
+            "median": float(per_item.median()),
+            "mean": float(per_item.mean()),
+            "max": int(per_item.max()),
+        },
+        "timestamp_min": int(df["timestamp"].min()),
+        "timestamp_max": int(df["timestamp"].max()),
+        "memory_mb": float(df.memory_usage(deep=True).sum() / 1e6),
     }
 
 
-"""
+def show_dataset_stats(df: pd.DataFrame) -> None:
+    stats = get_dataset_stats(df)
+    print(f"Numero de usuarios: {stats['num_users']}")
+    print(f"Numero de peliculas: {stats['num_items']}")
+    print(f"Numero de interacciones: {stats['num_interactions']}")
+    print(f"Esparsidad: {stats['sparsity']:.4f}")
+    print(f"Rating medio: {stats['rating_mean']:.3f} (std {stats['rating_std']:.3f})")
+    print(f"Memoria: {stats['memory_mb']:.1f} MB")

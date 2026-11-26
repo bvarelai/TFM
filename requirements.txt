@@ -1,2 +1,7 @@
-pandas
-lenskit
+pandas==2.3.3
+numpy==2.4.6
+scipy==1.17.1
+pyarrow==26.0.1
+pyspark==4.3.0      # cámbiala por la versión de Spark del clúster
+lenskit==2025.8.1
+xgboost==3.2.0

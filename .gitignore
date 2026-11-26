@@ -1,1 +1,10 @@
+# Entorno virtual
+.venv/
+
+# Datos
 data/raw/
+data/processed/
+
+# Python
+__pycache__/
+*.pyc
